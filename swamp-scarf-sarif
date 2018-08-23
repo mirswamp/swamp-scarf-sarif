@@ -1,0 +1,316 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Memory::Usage;
+use XML::Twig;
+use Data::Dumper;
+use Getopt::Long;
+use ScarfXmlReader;
+use SarifJsonWriter;
+
+my $version = '0.0.1';
+
+# 
+# PrintUsage: Prints a usage message
+#
+sub PrintUsage {
+    my $programName = $0;
+    $programName =~ s/.*[\\\/]//;
+
+    print STDERR <<EOF;
+Usage: $programName [options] <dir>...
+
+options:
+    --help                         -h print this message
+    --version                      -v print version
+    --scarf=<FILE>                 -x path to scarf file
+    --summary=<FILE>               -s path to assessment_summary file
+    --hashes=<FILE>                -l path to file containing list of hashes
+    --build=<FILE>                 -b path to build directory
+EOF
+}
+
+# PrintVersion - Print the version of the program
+#
+sub PrintVersion {
+    my $progName = $0;
+
+    $progName =~ s/.*(\\\/)//;
+    print "$progName version $version\n";
+}
+
+sub ProcessOptions {
+    my %optionDefaults = (
+        help => 0,
+    );
+
+    my @options = (
+        "help|h!",
+        "version|v!",
+        "scarf|x=s",
+        "summary|s=s",
+        "hashes|l=s",
+        "build|b=s",
+    );
+
+    Getopt::Long::Configure(qw/require_order no_ignore_case no_auto_abbrev/);
+    my %getoptOptions;
+    my $ok = GetOptions(\%getoptOptions, @options);
+
+    my %options = %optionDefaults;
+    my %optSet;
+    while (my ($k, $v) = each %getoptOptions) {
+        $options{$k} = $v;
+        $optSet{$k} = 1;
+    }
+
+    my @errs;
+
+    if (!$ok || $options{help}) {
+        PrintUsage(\%optionDefaults);
+        exit !$ok;
+    }
+
+    if ($ok && $options{version}) {
+        PrintVersion();
+        exit 0;
+    }
+
+    if (!exists $options{scarf}) {
+        push @errs, "scarf file not provided" unless exists $options{scarf};
+    }
+
+    if (@errs) {
+        print STDERR "$0: options Errors:\n    ", join ("\n    ", @errs), "\n";
+        exit 1;
+    }
+
+    return \%options;
+}
+
+sub ReadAssessmentSummary {
+    my ($summaryFile) = @_;
+    my %hash;
+    my $assessment = {};
+
+    my $t = XML::Twig->new(
+        twig_handlers => {
+            'assessment-summary/assessment-artifacts/assessment' => sub {
+                my ($twig, $e) = @_;
+                $hash{$assessment->{'build-artifact-id'}} = $assessment;
+                $assessment = {};
+                $twig->purge();
+            },
+            'assessment-summary/assessment-artifacts/assessment/build-artifact-id' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{'build-artifact-id'} = GetText($e);
+            },
+            'assessment-summary/assessment-artifacts/assessment/report' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{report} = GetText($e);
+            },
+            'assessment-summary/assessment-artifacts/assessment/exit-code' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{exitCode} = GetText($e);
+            },
+            'assessment-summary/assessment-artifacts/assessment/start-ts' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{startTime} = ConvertEpoch(GetText($e));
+            },
+            'assessment-summary/assessment-artifacts/assessment/stop-ts' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{endTime} = ConvertEpoch(GetText($e));
+            },
+            'assessment-summary/assessment-artifacts/assessment/command/cwd' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{workingDirectory} = GetText($e);
+            },
+            'assessment-summary/assessment-artifacts/assessment/command/environment/env' => sub {
+                my ($twig, $e) = @_;
+                my $string = GetText($e);
+                if ($string =~ /(.+)=(.*)/) {
+                    if (exists $assessment->{env}{$1}) {
+                        die "env $1 already exists";
+                    }
+                    $assessment->{env}{$1} = $2;
+                }
+                else {
+                    print "Error parsing env $string\n";
+                }
+            },
+            'assessment-summary/assessment-artifacts/assessment/command/executable' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{commandLine} = GetText($e);
+            },
+            'assessment-summary/assessment-artifacts/assessment/command/args/arg' => sub {
+                my ($twig, $e) = @_;
+                push @{$assessment->{args}}, GetText($e);
+            },
+        }
+    );
+    $t->parsefile($summaryFile);
+    return \%hash;
+}
+
+sub ReadHashFile {
+    my ($filename) = @_;
+    my %hash;
+
+    open (my $fh, '<', $filename) or die "Can't open hash file $filename: $!";
+
+    foreach (<$fh>) {
+        if (/(.+)\s(.+)/) {
+            $hash{$2} = $1;
+        } else {
+            die "Error parsing hash file";
+        }
+    }
+
+    close $fh;
+    return \%hash;
+}
+
+sub InitialFunction {
+    my ($initialData, $data) = @_;
+
+    my %initialHash = (
+        'tool_name' => $initialData->{tool_name},
+        'tool_version' => $initialData->{tool_version},
+        'uriBaseId' => $initialData->{build_root_dir},
+        'package_root_dir' => $initialData->{package_root_dir},
+        'instanceGuid' => $initialData->{uuid},
+    );
+
+    $data->{writer}->AddStartTag(\%initialHash);
+    return;
+}
+
+sub BugFunction {
+    my ($bugData, $data) = @_;
+
+    $data->{writer}->AddBugInstance($bugData);
+
+    return;
+}
+
+sub main {
+    my $startTime = ConvertEpoch(time());
+    my $mu = Memory::Usage->new();
+    $mu->record('start');
+
+    my @args = @ARGV;
+    my $options = ProcessOptions();
+
+    my %data;
+
+    my $reader = new ScarfXmlReader($options->{scarf});
+
+    my @arr = qw/ one two three /;
+
+    my %arguments = (
+        filename => "validator/output.sarif",
+        pretty => 1,
+        startTime => $startTime,
+        options => $options,
+        argvs => \@args,
+        sha256hashes => $data{sha256hashes},
+    );
+
+    if ($options->{summary}) {
+        $arguments{summary} = ReadAssessmentSummary($options->{summary});
+    }
+    if ($options->{hashes}) {
+        $arguments{sha256hashes} = ReadHashFile($options->{hashes});
+    }
+
+    $data{writer} = new SarifJsonWriter(\%arguments);
+
+    $reader->SetInitialCallback(\&InitialFunction);
+    $reader->SetBugCallback(\&BugFunction);
+
+    $reader->SetCallbackData(\%data);
+    $reader->Parse();
+
+    $mu->record('end');
+    $mu->dump();
+
+    $data{writer}->Close();
+}
+
+sub GetText {
+    my ($e) = @_;
+
+    if (!$e->contains_only_text()) {
+        my $xpath = $e->xpath();
+        die "Element $xpath must contain only text: $!";
+    }
+    
+    return $e->text();
+}
+
+sub ConvertEpoch {
+    my ($time) = @_;
+
+    my $fraction;
+    if ($time =~ /.+\.(.+)/) {
+        $fraction = $1;
+    }
+
+    my ($sec, $min, $hour, $day, $month, $year) = gmtime($time);
+
+    $year += 1900;
+    $month += 1;
+
+    if ($month < 10) {
+        $month = "0".$month;
+    }
+    if ($day < 10) {
+        $day = "0".$day;
+    }
+    if ($hour < 10) {
+        $hour = "0".$hour;
+    }
+    if ($min < 10) {
+        $min = "0".$min;
+    }
+    if ($sec < 10) {
+        $sec = "0".$sec;
+    }
+
+    if ($fraction) {
+        return "$year-$month-$day"."T"."$hour:$min:$sec.$fraction" . "Z";
+    } else {
+        return "$year-$month-$day"."T"."$hour:$min:$sec" . "Z";
+    }
+} 
+
+
+sub CheckSummary {
+    my ($hash) = @_;
+
+    foreach my $id (keys %{$hash}) {
+        
+        foreach my $key (keys %{$hash->{$id}}) {
+            if ($key eq 'env') {
+                print "ENVS:\n";
+                foreach my $envKey (keys %{$hash->{$id}{$key}}) {
+                    my $envVal = $hash->{$id}{$key}{$envKey};
+                    print "$envKey : $envVal\n";
+                }
+            } elsif ($key eq 'args') {
+                print "ARGS:\n";
+                foreach my $arg (@{$hash->{$id}{args}}) {
+                    print "arg: $arg\n";
+                }
+            } else {
+                my $value = $hash->{$id}{$key};
+                print "$key : $value\n";
+            }
+        }
+
+        print "\n";
+    }
+}
+
+
+main();
