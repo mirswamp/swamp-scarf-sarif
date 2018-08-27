@@ -27,6 +27,7 @@ options:
     --summary=<FILE>               -s path to assessment_summary file
     --hashes=<FILE>                -l path to file containing list of hashes
     --build=<FILE>                 -b path to build directory
+    --output=<FILE>                -o output file name/path
 EOF
 }
 
@@ -51,6 +52,7 @@ sub ProcessOptions {
         "summary|s=s",
         "hashes|l=s",
         "build|b=s",
+        "output|o=s",
     );
 
     Getopt::Long::Configure(qw/require_order no_ignore_case no_auto_abbrev/);
@@ -117,6 +119,11 @@ sub ReadAssessmentSummary {
                 my ($twig, $e) = @_;
                 $assessment->{startTime} = ConvertEpoch(GetText($e));
             },
+            # FIXME: There is no need for the following block since it should be stop-ts
+            'assessment-summary/assessment-artifacts/assessment/end-ts' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{endTime} = ConvertEpoch(GetText($e));
+            },
             'assessment-summary/assessment-artifacts/assessment/stop-ts' => sub {
                 my ($twig, $e) = @_;
                 $assessment->{endTime} = ConvertEpoch(GetText($e));
@@ -173,15 +180,7 @@ sub ReadHashFile {
 sub InitialFunction {
     my ($initialData, $data) = @_;
 
-    my %initialHash = (
-        'tool_name' => $initialData->{tool_name},
-        'tool_version' => $initialData->{tool_version},
-        'uriBaseId' => $initialData->{build_root_dir},
-        'package_root_dir' => $initialData->{package_root_dir},
-        'instanceGuid' => $initialData->{uuid},
-    );
-
-    $data->{writer}->AddStartTag(\%initialHash);
+    $data->{writer}->AddStartTag($initialData);
     return;
 }
 
@@ -198,21 +197,23 @@ sub main {
     my $mu = Memory::Usage->new();
     $mu->record('start');
 
-    my @args = @ARGV;
+    my @cmdl_args = @ARGV;
     my $options = ProcessOptions();
 
     my %data;
 
     my $reader = new ScarfXmlReader($options->{scarf});
 
-    my @arr = qw/ one two three /;
+    if (!$options->{output}) {
+        die "No output file name specified";
+    }
 
     my %arguments = (
-        filename => "validator/output.sarif",
+        filename => $options->{output},
         pretty => 1,
         startTime => $startTime,
         options => $options,
-        argvs => \@args,
+        argvs => \@cmdl_args,
         sha256hashes => $data{sha256hashes},
     );
 
@@ -232,7 +233,7 @@ sub main {
     $reader->Parse();
 
     $mu->record('end');
-    $mu->dump();
+    #$mu->dump();
 
     $data{writer}->Close();
 }
@@ -283,34 +284,5 @@ sub ConvertEpoch {
         return "$year-$month-$day"."T"."$hour:$min:$sec" . "Z";
     }
 } 
-
-
-sub CheckSummary {
-    my ($hash) = @_;
-
-    foreach my $id (keys %{$hash}) {
-        
-        foreach my $key (keys %{$hash->{$id}}) {
-            if ($key eq 'env') {
-                print "ENVS:\n";
-                foreach my $envKey (keys %{$hash->{$id}{$key}}) {
-                    my $envVal = $hash->{$id}{$key}{$envKey};
-                    print "$envKey : $envVal\n";
-                }
-            } elsif ($key eq 'args') {
-                print "ARGS:\n";
-                foreach my $arg (@{$hash->{$id}{args}}) {
-                    print "arg: $arg\n";
-                }
-            } else {
-                my $value = $hash->{$id}{$key};
-                print "$key : $value\n";
-            }
-        }
-
-        print "\n";
-    }
-}
-
 
 main();
