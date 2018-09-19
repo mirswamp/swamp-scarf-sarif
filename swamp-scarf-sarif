@@ -1,32 +1,35 @@
 #!/usr/bin/perl -w
 
 use strict;
+use lib qw(.);
 use Memory::Usage;
 use XML::Twig;
 use Data::Dumper;
 use Getopt::Long;
+use Cwd;
 use ScarfXmlReader;
 use SarifJsonWriter;
+use SarifJsonWriter qw(CheckStart CheckBug);
 
-my $version = '0.0.1';
+my $progName = "SWAMP SARIF Translator";
+my $version = '0.8.0';
 
-# 
 # PrintUsage: Prints a usage message
-#
 sub PrintUsage {
     my $programName = $0;
     $programName =~ s/.*[\\\/]//;
 
     print STDERR <<EOF;
-Usage: $programName [options] <dir>...
+Usage: $programName [options]
 
 options:
     --help                         -h print this message
     --version                      -v print version
+    --compact                      -c print compactly (no indents)
     --scarf=<FILE>                 -x path to scarf file
     --summary=<FILE>               -s path to assessment_summary file
     --hashes=<FILE>                -l path to file containing list of hashes
-    --build=<FILE>                 -b path to build directory
+    --build=<DIR>                  -b path to build directory
     --output=<FILE>                -o output file name/path
 EOF
 }
@@ -43,11 +46,13 @@ sub PrintVersion {
 sub ProcessOptions {
     my %optionDefaults = (
         help => 0,
+        compact => 1,
     );
 
     my @options = (
         "help|h!",
         "version|v!",
+        "compact|c!",
         "scarf|x=s",
         "summary|s=s",
         "hashes|l=s",
@@ -60,10 +65,12 @@ sub ProcessOptions {
     my $ok = GetOptions(\%getoptOptions, @options);
 
     my %options = %optionDefaults;
-    my %optSet;
     while (my ($k, $v) = each %getoptOptions) {
-        $options{$k} = $v;
-        $optSet{$k} = 1;
+        if ($k eq "compact") {
+            $options{$k} = 0;
+        } else {
+            $options{$k} = $v;
+        }
     }
 
     my @errs;
@@ -78,10 +85,9 @@ sub ProcessOptions {
         exit 0;
     }
 
-    if (!exists $options{scarf}) {
-        push @errs, "scarf file not provided" unless exists $options{scarf};
-    }
-
+    push @errs, "scarf file not provided" unless exists $options{scarf};
+    push @errs, "output file name/path not provided" unless exists $options{output};
+ 
     if (@errs) {
         print STDERR "$0: options Errors:\n    ", join ("\n    ", @errs), "\n";
         exit 1;
@@ -180,6 +186,26 @@ sub ReadHashFile {
 sub InitialFunction {
     my ($initialData, $data) = @_;
 
+    $initialData->{conversion}{tool_name} = $progName;
+    $initialData->{conversion}{tool_version} = $version;
+    $initialData->{conversion}{commandLine} = $0;
+    $initialData->{conversion}{argv} = $data->{argv};
+    $initialData->{conversion}{workingDirectory} = getcwd();
+    foreach (keys %ENV) {
+        $initialData->{conversion}{env}{$_} = $ENV{$_};
+    }
+    $initialData->{conversion}{startTime} = $data->{startTime};
+
+    if ($data->{options}{hashes}) {
+        $initialData->{sha256hashes} = ReadHashFile($data->{options}{hashes});
+    }
+    if ($data->{options}{summary}) {
+        $initialData->{invocations} = ReadAssessmentSummary($data->{options}{summary});
+    }
+    if ($data->{options}{build}) {
+        $initialData->{buildDir} = $data->{options}{build};
+    }
+
     $data->{writer}->AddStartTag($initialData);
     return;
 }
@@ -187,44 +213,27 @@ sub InitialFunction {
 sub BugFunction {
     my ($bugData, $data) = @_;
 
+    $data->{hasBug} = 1;
     $data->{writer}->AddBugInstance($bugData);
 
     return;
 }
 
 sub main {
-    my $startTime = ConvertEpoch(time());
+    my $startTime = time();
     my $mu = Memory::Usage->new();
     $mu->record('start');
 
-    my @cmdl_args = @ARGV;
-    my $options = ProcessOptions();
-
     my %data;
 
-    my $reader = new ScarfXmlReader($options->{scarf});
+    push @{$data{argv}}, @ARGV;
+    $data{startTime} = $startTime;
+    $data{options} = ProcessOptions();
 
-    if (!$options->{output}) {
-        die "No output file name specified";
-    }
+    my $reader = new ScarfXmlReader($data{options}{scarf});
 
-    my %arguments = (
-        filename => $options->{output},
-        pretty => 1,
-        startTime => $startTime,
-        options => $options,
-        argvs => \@cmdl_args,
-        sha256hashes => $data{sha256hashes},
-    );
-
-    if ($options->{summary}) {
-        $arguments{summary} = ReadAssessmentSummary($options->{summary});
-    }
-    if ($options->{hashes}) {
-        $arguments{sha256hashes} = ReadHashFile($options->{hashes});
-    }
-
-    $data{writer} = new SarifJsonWriter(\%arguments);
+    $data{writer} = new SarifJsonWriter($data{options}{output}, "utf-8");
+    $data{writer}->SetPretty($data{options}{compact});
 
     $reader->SetInitialCallback(\&InitialFunction);
     $reader->SetBugCallback(\&BugFunction);
@@ -236,6 +245,10 @@ sub main {
     #$mu->dump();
 
     $data{writer}->Close();
+
+    if (!$data{hasBug}) {
+        die "Has no bug";
+    }
 }
 
 sub GetText {
