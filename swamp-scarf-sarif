@@ -1,7 +1,9 @@
 #!/usr/bin/perl -w
 
-# https://github.com/mirswamp/swamp-scarf-sarif
-# SWAMP: https://continuousassurance.org
+# swamp-scarf-sarif
+#
+#     Source code: https://github.com/mirswamp/swamp-scarf-sarif
+#     Project Information: https://continuousassurance.org
 #
 # Copyright 2018 Yuan Zhe Bugh, James A. Kupsch
 # 
