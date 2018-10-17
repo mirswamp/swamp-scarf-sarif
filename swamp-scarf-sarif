@@ -3,10 +3,10 @@
 # swamp-scarf-sarif
 #
 #     Source code: https://github.com/mirswamp/swamp-scarf-sarif
-#     Project Information: https://continuousassurance.org
+#     Project information: https://continuousassurance.org
 #
 # Copyright 2018 Yuan Zhe Bugh, James A. Kupsch
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -16,7 +16,7 @@
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the Lincense is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and 
+# See the License for the specific language governing permissions and
 # limitations under the License.
 
 use strict;
@@ -28,11 +28,10 @@ use Data::Dumper;
 use Getopt::Long;
 use Cwd;
 use ScarfXmlReader;
-#use SarifJsonWriter;
 use SarifJsonWriter qw(CheckStart CheckBug);
 
 my $progName = "swamp-scarf-sarif";
-my $version = '0.8.0';
+my $version = '0.8.1';
 
 # PrintUsage: Prints a usage message
 sub PrintUsage {
@@ -50,6 +49,7 @@ options:
     --summary=<FILE>               -s path to assessment_summary file
     --hashes=<FILE>                -l path to file containing list of hashes
     --build=<DIR>                  -b path to build directory
+    --error=<STRING>               -e reasons assessment failed
     --output=<FILE>                -o output file name/path
 EOF
 }
@@ -76,6 +76,7 @@ sub ProcessOptions {
         "summary|s=s",
         "hashes|l=s",
         "build|b=s",
+        "error|e=s",
         "output|o=s",
     );
 
@@ -104,9 +105,12 @@ sub ProcessOptions {
         exit 0;
     }
 
-    push @errs, "scarf file not provided" unless exists $options{scarf};
+    if (!exists $options{scarf} && !exists $options{error}) {
+        push @errs, "Must provide either scarf file or error file"
+    }
+
     push @errs, "output file name/path not provided" unless exists $options{output};
- 
+
     if (@errs) {
         print STDERR "$0: options Errors:\n    ", join ("\n    ", @errs), "\n";
         exit 1;
@@ -237,6 +241,35 @@ sub BugFunction {
     return;
 }
 
+sub Failure {
+    my ($data) = @_;
+    my $failureData = {};
+
+    if ($data->{options}{output} =~ /.+---.+---(.+)---parse/) {
+        $failureData->{tool}{tool_name} = $1;
+    }
+    else {
+        die "Unable to get tool name from dir name";
+    }
+
+    $failureData->{conversion}{tool_name} = $progName;
+    $failureData->{conversion}{tool_version} = $version;
+    $failureData->{conversion}{commandLine} = $0;
+    $failureData->{conversion}{argv} = $data->{argv};
+    $failureData->{conversion}{workingDirectory} = getcwd();
+    foreach (keys %ENV) {
+        $failureData->{conversion}{env}{$_} = $ENV{$_};
+    }
+    $failureData->{conversion}{startTime} = $data->{startTime};
+
+    $failureData->{message} = $data->{options}{error};
+
+    my $writer = new SarifJsonWriter($data->{options}{output}, "utf-8");
+    $writer->SetPretty($data->{options}{compact});
+
+    $writer->AddFailure($failureData);
+}
+
 sub main {
     my $startTime = time();
     my $mu = Memory::Usage->new();
@@ -244,25 +277,30 @@ sub main {
 
     my %data;
 
-    push @{$data{argv}}, @ARGV;
     $data{startTime} = $startTime;
+    push @{$data{argv}}, @ARGV;
     $data{options} = ProcessOptions();
 
-    my $reader = new ScarfXmlReader($data{options}{scarf});
+    if ($data{options}{error}) {
+      Failure(\%data);
+    }
+    else {
+      my $reader = new ScarfXmlReader($data{options}{scarf});
 
-    $data{writer} = new SarifJsonWriter($data{options}{output}, "utf-8");
-    $data{writer}->SetPretty($data{options}{compact});
+      $data{writer} = new SarifJsonWriter($data{options}{output}, "utf-8");
+      $data{writer}->SetPretty($data{options}{compact});
 
-    $reader->SetInitialCallback(\&InitialFunction);
-    $reader->SetBugCallback(\&BugFunction);
+      $reader->SetInitialCallback(\&InitialFunction);
+      $reader->SetBugCallback(\&BugFunction);
 
-    $reader->SetCallbackData(\%data);
-    $reader->Parse();
+      $reader->SetCallbackData(\%data);
+      $reader->Parse();
+
+      $data{writer}->Close();
+    }
 
     $mu->record('end');
     #$mu->dump();
-
-    $data{writer}->Close();
 }
 
 sub GetText {
@@ -272,7 +310,7 @@ sub GetText {
         my $xpath = $e->xpath();
         die "Element $xpath must contain only text: $!";
     }
-    
+
     return $e->text();
 }
 
@@ -310,6 +348,6 @@ sub ConvertEpoch {
     } else {
         return "$year-$month-$day"."T"."$hour:$min:$sec" . "Z";
     }
-} 
+}
 
 main();
