@@ -31,7 +31,7 @@ use ScarfXmlReader;
 use SarifJsonWriter qw(CheckStart CheckBug);
 
 my $progName = "swamp-scarf-sarif";
-my $version = '0.8.1';
+my $version = '0.8.2';
 
 # PrintUsage: Prints a usage message
 sub PrintUsage {
@@ -42,15 +42,16 @@ sub PrintUsage {
 Usage: $programName [options]
 
 options:
-    --help                         -h print this message
-    --version                      -v print version
-    --compact                      -c print compactly (no indents)
-    --scarf=<FILE>                 -x path to scarf file
-    --summary=<FILE>               -s path to assessment_summary file
-    --hashes=<FILE>                -l path to file containing list of hashes
-    --build=<DIR>                  -b path to build directory
-    --error=<STRING>               -e reasons assessment failed
-    --output=<FILE>                -o output file name/path
+    --help                      -h print this message
+    --version                   -v print version
+    --compact                   -c print compactly (no indents)
+    --scarf=<FILE>              -x path to scarf file
+    --summary=<FILE>            -s path to assessment_summary file
+    --hashes=<FILE>             -l path to file containing list of hashes
+    --build=<DIR>               -b path to build directory
+    --error=<STRING>            -e reasons assessment failed
+    --output=<FILE>             -o output file name/path
+    --setenv                    -n reduce conversion env output
 EOF
 }
 
@@ -78,6 +79,7 @@ sub ProcessOptions {
         "build|b=s",
         "error|e=s",
         "output|o=s",
+        "setenv|n!",
     );
 
     Getopt::Long::Configure(qw/require_order no_ignore_case no_auto_abbrev/);
@@ -195,7 +197,7 @@ sub ReadHashFile {
     open (my $fh, '<', $filename) or die "Can't open hash file $filename: $!";
 
     foreach (<$fh>) {
-        if (/(.+)\s(.+)/) {
+        if (/(.+)\s\s(.+)/) {
             $hash{$2} = $1;
         } else {
             die "Error parsing hash file";
@@ -209,13 +211,30 @@ sub ReadHashFile {
 sub InitialFunction {
     my ($initialData, $data) = @_;
 
+    my $dir = $initialData->{build_root_dir};
+    if ($dir =~ /(.+)\/.+/) {
+        $dir = $1."/results";
+    } else {
+        die "build_root_dir is not as expected";
+    }
+    $initialData->{results_root_dir} = $dir;
     $initialData->{conversion}{tool_name} = $progName;
     $initialData->{conversion}{tool_version} = $version;
     $initialData->{conversion}{commandLine} = $0;
     $initialData->{conversion}{argv} = $data->{argv};
     $initialData->{conversion}{workingDirectory} = getcwd();
-    foreach (keys %ENV) {
-        $initialData->{conversion}{env}{$_} = $ENV{$_};
+    if ($data->{options}{setenv}) {
+        foreach(keys %ENV) {
+            if ($_ eq "LANG") {
+                $initialData->{conversion}{env}{$_} = $ENV{$_};
+            } elsif ($_ eq "PATH") {
+                $initialData->{conversion}{env}{$_} = "/bin:/usr/bin:."
+            }
+        }
+    } else {
+        foreach (keys %ENV) {
+            $initialData->{conversion}{env}{$_} = $ENV{$_};
+        }
     }
     $initialData->{conversion}{startTime} = $data->{startTime};
 
@@ -257,8 +276,18 @@ sub Failure {
     $failureData->{conversion}{commandLine} = $0;
     $failureData->{conversion}{argv} = $data->{argv};
     $failureData->{conversion}{workingDirectory} = getcwd();
-    foreach (keys %ENV) {
-        $failureData->{conversion}{env}{$_} = $ENV{$_};
+    if ($data->{options}{setenv}) {
+        foreach(keys %ENV) {
+            if ($_ eq "LANG") {
+                $failureData->{conversion}{env}{$_} = $ENV{$_};
+            } elsif ($_ eq "PATH") {
+                $failureData->{conversion}{env}{$_} = "/bin:/usr/bin:."
+            }
+        }
+    } else {
+        foreach (keys %ENV) {
+            $failureData->{conversion}{env}{$_} = $ENV{$_};
+        }
     }
     $failureData->{conversion}{startTime} = $data->{startTime};
 
