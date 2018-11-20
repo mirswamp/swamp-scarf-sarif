@@ -31,7 +31,9 @@ use ScarfXmlReader;
 use SarifJsonWriter qw(CheckStart CheckBug);
 
 my $progName = "swamp-scarf-sarif";
-my $version = '0.8.2';
+my $version = '0.8.3';
+
+my $bashNonMetaChars = qr/[a-zA-Z0-9.,_=+\/\@:-]/;
 
 # PrintUsage: Prints a usage message
 sub PrintUsage {
@@ -108,7 +110,7 @@ sub ProcessOptions {
     }
 
     if (!exists $options{scarf} && !exists $options{error}) {
-        push @errs, "Must provide either scarf file or error file"
+        push @errs, "Must provide either scarf file or error file";
     }
 
     push @errs, "output file name/path not provided" unless exists $options{output};
@@ -123,20 +125,24 @@ sub ProcessOptions {
 
 sub ReadAssessmentSummary {
     my ($summaryFile) = @_;
-    my %hash;
+    my %hash = (
+        packageRootDir => undef,
+        assessments    => [],
+    );
     my $assessment = {};
 
     my $t = XML::Twig->new(
         twig_handlers => {
+            'assessment-summary/package-root-dir' => sub {
+                my ($twig, $e) = @_;
+                $hash{packageRootDir} = GetText($e);
+            },
             'assessment-summary/assessment-artifacts/assessment' => sub {
                 my ($twig, $e) = @_;
-                $hash{$assessment->{'build-artifact-id'}} = $assessment;
+                $assessment->{commandLine} = BashQuoteArgList($assessment->{args});
+                push @{$hash{assessments}}, $assessment;
                 $assessment = {};
                 $twig->purge();
-            },
-            'assessment-summary/assessment-artifacts/assessment/build-artifact-id' => sub {
-                my ($twig, $e) = @_;
-                $assessment->{'build-artifact-id'} = GetText($e);
             },
             'assessment-summary/assessment-artifacts/assessment/report' => sub {
                 my ($twig, $e) = @_;
@@ -176,10 +182,6 @@ sub ReadAssessmentSummary {
                     print "Error parsing env $string\n";
                 }
             },
-            'assessment-summary/assessment-artifacts/assessment/command/executable' => sub {
-                my ($twig, $e) = @_;
-                $assessment->{commandLine} = GetText($e);
-            },
             'assessment-summary/assessment-artifacts/assessment/command/args/arg' => sub {
                 my ($twig, $e) = @_;
                 push @{$assessment->{args}}, GetText($e);
@@ -211,6 +213,7 @@ sub ReadHashFile {
 sub InitialFunction {
     my ($initialData, $data) = @_;
 
+    # create uriBaseId for assessment_report files
     my $dir = $initialData->{build_root_dir};
     if ($dir =~ /(.+)\/.+/) {
         $dir = $1."/results";
@@ -218,6 +221,7 @@ sub InitialFunction {
         die "build_root_dir is not as expected";
     }
     $initialData->{results_root_dir} = $dir;
+
     $initialData->{conversion}{tool_name} = $progName;
     $initialData->{conversion}{tool_version} = $version;
     $initialData->{conversion}{commandLine} = $0;
@@ -243,6 +247,12 @@ sub InitialFunction {
     }
     if ($data->{options}{summary}) {
         $initialData->{invocations} = ReadAssessmentSummary($data->{options}{summary});
+
+        # Check if packageRootDir in assessment_summary is same as root_dir in scarf file
+        my $rootDir = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
+        if ($initialData->{invocations}{packageRootDir} ne $rootDir) {
+            die "Expect package_root_dir $initialData->{invocations}{packageRootDir} in assessment_summary to be the same as the root_dir $rootDir in the scarf file: $!";
+        }
     }
     if ($data->{options}{build}) {
         $initialData->{buildDir} = $data->{options}{build};
@@ -377,6 +387,75 @@ sub ConvertEpoch {
     } else {
         return "$year-$month-$day"."T"."$hour:$min:$sec" . "Z";
     }
+}
+
+# NormalizePath - take a path and remove empty and '.' directory components
+#                 empty directories become '.'
+sub NormalizePath {
+    my $p = shift;
+
+    $p =~ s/\/\/+/\//g;        # collapse consecutive /'s to one /
+    $p =~ s/\/(\.\/)+/\//g;    # change /./'s to one /
+    $p =~ s/^\.\///;           # remove initial ./
+    $p = '.' if $p eq '';      # change empty dirs to .
+    $p =~ s/\/\.$/\//;                 # remove trailing . directory names
+    $p =~ s/\/$// unless $p eq '/'; # remove trailing /
+
+    return $p;
+}
+
+# AdjustPath - take a path that is relative to curDir and make it relative
+#              to baseDir.  If the path is not in baseDir, do not modify.
+#
+#       baseDir    - the directory to make paths relative to
+#       curDir     - the directory paths are currently relative to
+#       path       - the path to change
+sub AdjustPath {
+    my ($baseDir, $curDir, $path) = @_;
+
+    $baseDir = NormalizePath($baseDir);
+    $curDir = NormalizePath($curDir);
+    $path = NormalizePath($path);
+
+    # if path is relative, prefix with current dir
+    if ($path eq '.') {
+        $path = $curDir;
+    } elsif ($curDir ne '.' && $path !~ /^\//) {
+        $path = "$curDir/$path";
+    }
+
+    # remove initial baseDir from path if baseDir is not empty
+    $path =~ s/^\Q$baseDir\E\///;
+
+    return $path;
+}
+
+sub HasBashMetaChars {
+    my $s = shift;
+    return ($s !~ /^$bashNonMetaChars*$/);
+}
+
+sub BashQuote {
+    my $s = shift;
+
+    my @a = split /(')/, $s;
+    foreach (@a) {
+        if (HasBashMetaChars($_)) {
+            if ($_ eq "'") {
+                $_ = "\\'";
+            } else {
+                $_ = "'$_'";
+            }
+        }
+    }
+    return join('', @a);
+}
+
+sub BashQuoteArgList {
+    my ($c) = @_;
+    my @cmd = @{$c};
+    my $s = join ' ', map {BashQuote $_} @cmd;
+    return $s;
 }
 
 main();
