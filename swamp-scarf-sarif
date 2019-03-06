@@ -28,10 +28,10 @@ use Data::Dumper;
 use Getopt::Long;
 use Cwd;
 use ScarfXmlReader;
-use SarifJsonWriter qw(CheckStart CheckBug);
+use SarifJsonWriter qw(CheckInitialData CheckResultData);
 
 my $progName = "swamp-scarf-sarif";
-my $version = '0.8.3';
+my $version = '0.8.5';
 
 my $bashNonMetaChars = qr/[a-zA-Z0-9.,_=+\/\@:-]/;
 
@@ -52,6 +52,7 @@ options:
     --hashes=<FILE>             -l path to file containing list of hashes
     --build=<DIR>               -b path to build directory
     --error=<STRING>            -e reasons assessment failed
+    --external=<STRING>         -t objects to be externalized
     --output=<FILE>             -o output file name/path
     --setenv                    -n reduce conversion env output
 EOF
@@ -80,6 +81,7 @@ sub ProcessOptions {
         "hashes|l=s",
         "build|b=s",
         "error|e=s",
+        "external|t=s%",
         "output|o=s",
         "setenv|n!",
     );
@@ -113,6 +115,22 @@ sub ProcessOptions {
         push @errs, "Must provide either scarf file or error file";
     }
 
+    my %externalizable = (
+        conversion => 0,
+        files => 0,
+        graphs => 0,
+        invocations => 0,
+        logicalLocations => 0,
+        properties => 0,
+        resources => 0,
+        results => 0,
+    );
+    foreach my $key (keys %{$options{external}}) {
+        if (!exists $externalizable{$key}) {
+            push @errs, "external property $key not recognized";
+        }
+    }
+
     push @errs, "output file name/path not provided" unless exists $options{output};
 
     if (@errs) {
@@ -139,10 +157,14 @@ sub ReadAssessmentSummary {
             },
             'assessment-summary/assessment-artifacts/assessment' => sub {
                 my ($twig, $e) = @_;
-                $assessment->{commandLine} = BashQuoteArgList($assessment->{args});
+                #$assessment->{commandLine} = BashQuoteArgList($assessment->{args});
                 push @{$hash{assessments}}, $assessment;
                 $assessment = {};
                 $twig->purge();
+            },
+            'assessment-summary/assessment-artifacts/assessment/build-artifact-id' => sub {
+                my ($twig, $e) = @_;
+                $assessment->{"build-artifact-id"} = GetText($e);
             },
             'assessment-summary/assessment-artifacts/assessment/report' => sub {
                 my ($twig, $e) = @_;
@@ -220,52 +242,42 @@ sub InitialFunction {
     } else {
         die "build_root_dir is not as expected";
     }
-    $initialData->{results_root_dir} = $dir;
-
-    $initialData->{conversion}{tool_name} = $progName;
-    $initialData->{conversion}{tool_version} = $version;
-    $initialData->{conversion}{commandLine} = $0;
-    $initialData->{conversion}{argv} = $data->{argv};
-    $initialData->{conversion}{workingDirectory} = getcwd();
-    if ($data->{options}{setenv}) {
-        foreach(keys %ENV) {
-            if ($_ eq "LANG") {
-                $initialData->{conversion}{env}{$_} = $ENV{$_};
-            } elsif ($_ eq "PATH") {
-                $initialData->{conversion}{env}{$_} = "/bin:/usr/bin:."
-            }
-        }
-    } else {
-        foreach (keys %ENV) {
-            $initialData->{conversion}{env}{$_} = $ENV{$_};
-        }
-    }
-    $initialData->{conversion}{startTime} = $data->{startTime};
-
-    if ($data->{options}{hashes}) {
-        $initialData->{sha256hashes} = ReadHashFile($data->{options}{hashes});
-    }
-    if ($data->{options}{summary}) {
-        $initialData->{invocations} = ReadAssessmentSummary($data->{options}{summary});
-
-        # Check if packageRootDir in assessment_summary is same as root_dir in scarf file
-        my $rootDir = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
-        if ($initialData->{invocations}{packageRootDir} ne $rootDir) {
-            die "Expect package_root_dir $initialData->{invocations}{packageRootDir} in assessment_summary to be the same as the root_dir $rootDir in the scarf file: $!";
-        }
-    }
+    $initialData->{results_root_dir} = $dir;   
+    
     if ($data->{options}{build}) {
         $initialData->{buildDir} = $data->{options}{build};
     }
 
-    $data->{writer}->AddStartTag($initialData);
+    $data->{writer}->BeginFile();
+    $data->{writer}->BeginRun($initialData);
+
+    my %baseIds = (
+        PACKAGEROOT => "file://".AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir}),
+        RESULTSROOT => "file://".$initialData->{results_root_dir},
+    );
+    $data->{writer}->AddOriginalUriBaseIds(\%baseIds);
+
+    if ($data->{options}{summary}) {
+        my $invocations = ReadAssessmentSummary($data->{options}{summary});
+
+        # Check if packageRootDir in assessment_summary is same as root_dir in scarf file
+        my $rootDir = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
+        if ($invocations->{packageRootDir} ne $rootDir) {
+            die "Expect package_root_dir $invocations->{packageRootDir} in assessment_summary to be the same as the root_dir $rootDir in the scarf file: $!";
+        }
+
+        $data->{writer}->AddInvocations($invocations->{assessments})
+    }
+    
+    $data->{writer}->BeginResults();
+
     return;
 }
 
 sub BugFunction {
     my ($bugData, $data) = @_;
 
-    $data->{writer}->AddBugInstance($bugData);
+    $data->{writer}->AddResult($bugData);
 
     return;
 }
@@ -320,22 +332,60 @@ sub main {
     push @{$data{argv}}, @ARGV;
     $data{options} = ProcessOptions();
 
+    my %externalOptions;
+    foreach my $exName (keys %{$data{options}{external}}) {
+        $externalOptions{$exName}{name} = $data{options}{external}{$exName};
+    }
+
     if ($data{options}{error}) {
-      Failure(\%data);
+        Failure(\%data);
     }
     else {
-      my $reader = new ScarfXmlReader($data{options}{scarf});
+        my $reader = new ScarfXmlReader($data{options}{scarf});
 
-      $data{writer} = new SarifJsonWriter($data{options}{output}, "utf-8");
-      $data{writer}->SetPretty($data{options}{compact});
+        my %writerOptions = (
+            external => \%externalOptions,
+            pretty   => $data{options}{compact},
+        );
+        $data{writer} = new SarifJsonWriter($data{options}{output}, "utf-8");
+        $data{writer}->SetOptions(\%writerOptions);
 
-      $reader->SetInitialCallback(\&InitialFunction);
-      $reader->SetBugCallback(\&BugFunction);
+        $reader->SetInitialCallback(\&InitialFunction);
+        $reader->SetBugCallback(\&BugFunction);
 
-      $reader->SetCallbackData(\%data);
-      $reader->Parse();
+        $reader->SetCallbackData(\%data);
+        $reader->Parse();
 
-      $data{writer}->Close();
+        $data{writer}->EndResults();
+
+        my %endData;
+
+        if ($data{options}{hashes}) {
+            $endData{sha256hashes} = ReadHashFile($data{options}{hashes});
+        }
+
+        $endData{conversion}{tool_name} = $progName;
+        $endData{conversion}{tool_version} = $version;
+        $endData{conversion}{commandLine} = $0;
+        $endData{conversion}{argv} = $data{argv};
+        $endData{conversion}{workingDirectory} = getcwd();
+        if ($data{options}{setenv}) {
+            foreach(keys %ENV) {
+                if ($_ eq "LANG") {
+                    $endData{conversion}{env}{$_} = $ENV{$_};
+                } elsif ($_ eq "PATH") {
+                    $endData{conversion}{env}{$_} = "/bin:/usr/bin:."
+                }
+            }
+        } else {
+            foreach (keys %ENV) {
+                $endData{conversion}{env}{$_} = $ENV{$_};
+            }
+        }
+        $endData{conversion}{startTime} = $data{startTime};
+
+        $data{writer}->EndRun(\%endData);
+        $data{writer}->EndFile();
     }
 
     $mu->record('end');
