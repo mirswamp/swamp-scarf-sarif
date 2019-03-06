@@ -157,7 +157,7 @@ sub ReadAssessmentSummary {
             },
             'assessment-summary/assessment-artifacts/assessment' => sub {
                 my ($twig, $e) = @_;
-                #$assessment->{commandLine} = BashQuoteArgList($assessment->{args});
+                $assessment->{commandLine} = BashQuoteArgList($assessment->{args});
                 push @{$hash{assessments}}, $assessment;
                 $assessment = {};
                 $twig->purge();
