@@ -22,7 +22,6 @@
 use strict;
 use FindBin;
 use lib "$FindBin::Bin";
-use Memory::Usage;
 use XML::Twig;
 use Data::Dumper;
 use Getopt::Long;
@@ -31,7 +30,7 @@ use ScarfXmlReader;
 use SarifJsonWriter qw(CheckInitialData CheckResultData);
 
 my $progName = "swamp-scarf-sarif";
-my $version = '0.8.5';
+my $version = '0.8.8';
 
 my $bashNonMetaChars = qr/[a-zA-Z0-9.,_=+\/\@:-]/;
 
@@ -116,14 +115,22 @@ sub ProcessOptions {
     }
 
     my %externalizable = (
+        addresses => 0,
+        artifacts => 0,
         conversion => 0,
-        files => 0,
         graphs => 0,
         invocations => 0,
         logicalLocations => 0,
+        policies => 0,
         properties => 0,
-        resources => 0,
+        webRequests => 0,
+        webResponses => 0,
         results => 0,
+        taxonomies => 0,
+        threadFlowLocations => 0,
+        translations => 0,
+        'tool.driver' => 0,
+        'tool.extensions' => 0,
     );
     foreach my $key (keys %{$options{external}}) {
         if (!exists $externalizable{$key}) {
@@ -176,16 +183,16 @@ sub ReadAssessmentSummary {
             },
             'assessment-summary/assessment-artifacts/assessment/start-ts' => sub {
                 my ($twig, $e) = @_;
-                $assessment->{startTime} = ConvertEpoch(GetText($e));
+                $assessment->{startTime} = GetText($e);
             },
             # FIXME: There is no need for the following block since it should be stop-ts
             'assessment-summary/assessment-artifacts/assessment/end-ts' => sub {
                 my ($twig, $e) = @_;
-                $assessment->{endTime} = ConvertEpoch(GetText($e));
+                $assessment->{endTime} = GetText($e);
             },
             'assessment-summary/assessment-artifacts/assessment/stop-ts' => sub {
                 my ($twig, $e) = @_;
-                $assessment->{endTime} = ConvertEpoch(GetText($e));
+                $assessment->{endTime} = GetText($e);
             },
             'assessment-summary/assessment-artifacts/assessment/command/cwd' => sub {
                 my ($twig, $e) = @_;
@@ -194,14 +201,14 @@ sub ReadAssessmentSummary {
             'assessment-summary/assessment-artifacts/assessment/command/environment/env' => sub {
                 my ($twig, $e) = @_;
                 my $string = GetText($e);
-                if ($string =~ /(.+)=(.*)/) {
+                if ($string =~ /(.+?)=(.*)/) {
                     if (exists $assessment->{env}{$1}) {
-                        die "env $1 already exists";
+                        print STDERR "env $1 already exists changing value from ($assessment->{env}{$1}) to ($2)\n";
                     }
                     $assessment->{env}{$1} = $2;
                 }
                 else {
-                    print "Error parsing env $string\n";
+                    print STDERR "Error parsing env: $string\n";
                 }
             },
             'assessment-summary/assessment-artifacts/assessment/command/args/arg' => sub {
@@ -251,9 +258,25 @@ sub InitialFunction {
     $data->{writer}->BeginFile();
     $data->{writer}->BeginRun($initialData);
 
+    my %toolData = (
+        driver => {
+            name => $initialData->{tool_name},
+            version => $initialData->{tool_version}
+        }
+    );
+    $data->{writer}->AddToolData(\%toolData);
+
     my %baseIds = (
-        PACKAGEROOT => "file://".AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir}),
-        RESULTSROOT => "file://".$initialData->{results_root_dir},
+        BUILDROOT => {
+            uri => "file://" . UrlEncodePath($initialData->{build_root_dir}),
+        },
+        PACKAGEROOT => {
+            uri => UrlEncodePath($initialData->{package_root_dir}),
+            uriBaseId => "BUILDROOT",
+        },
+        RESULTSROOT => {
+            uri => "file://" . UrlEncodePath($initialData->{results_root_dir})
+        }
     );
     $data->{writer}->AddOriginalUriBaseIds(\%baseIds);
 
@@ -296,7 +319,7 @@ sub Failure {
     $failureData->{conversion}{tool_name} = $progName;
     $failureData->{conversion}{tool_version} = $version;
     $failureData->{conversion}{commandLine} = $0;
-    $failureData->{conversion}{argv} = $data->{argv};
+    $failureData->{conversion}{args} = $data->{argv};
     $failureData->{conversion}{workingDirectory} = getcwd();
     if ($data->{options}{setenv}) {
         foreach(keys %ENV) {
@@ -323,12 +346,11 @@ sub Failure {
 
 sub main {
     my $startTime = time();
-    my $mu = Memory::Usage->new();
-    $mu->record('start');
 
     my %data;
 
     $data{startTime} = $startTime;
+    push @{$data{argv}}, $0;
     push @{$data{argv}}, @ARGV;
     $data{options} = ProcessOptions();
 
@@ -345,6 +367,9 @@ sub main {
 
         my %writerOptions = (
             external => \%externalOptions,
+            addArtifactsNoLocation => 1,
+            addProvenance => 1,
+            artifactHashes => 1,
             pretty   => $data{options}{compact},
         );
         $data{writer} = new SarifJsonWriter($data{options}{output}, "utf-8");
@@ -364,10 +389,10 @@ sub main {
             $endData{sha256hashes} = ReadHashFile($data{options}{hashes});
         }
 
-        $endData{conversion}{tool_name} = $progName;
-        $endData{conversion}{tool_version} = $version;
-        $endData{conversion}{commandLine} = $0;
-        $endData{conversion}{argv} = $data{argv};
+        $endData{conversion}{tool}{driver}{name} = $progName;
+        $endData{conversion}{tool}{driver}{version} = $version;
+        $endData{conversion}{commandLine} = BashQuoteArgList($data{argv});
+        $endData{conversion}{args} = $data{argv};
         $endData{conversion}{workingDirectory} = getcwd();
         if ($data{options}{setenv}) {
             foreach(keys %ENV) {
@@ -387,9 +412,6 @@ sub main {
         $data{writer}->EndRun(\%endData);
         $data{writer}->EndFile();
     }
-
-    $mu->record('end');
-    #$mu->dump();
 }
 
 sub GetText {
@@ -401,42 +423,6 @@ sub GetText {
     }
 
     return $e->text();
-}
-
-sub ConvertEpoch {
-    my ($time) = @_;
-
-    my $fraction;
-    if ($time =~ /.+\.(.+)/) {
-        $fraction = $1;
-    }
-
-    my ($sec, $min, $hour, $day, $month, $year) = gmtime($time);
-
-    $year += 1900;
-    $month += 1;
-
-    if ($month < 10) {
-        $month = "0".$month;
-    }
-    if ($day < 10) {
-        $day = "0".$day;
-    }
-    if ($hour < 10) {
-        $hour = "0".$hour;
-    }
-    if ($min < 10) {
-        $min = "0".$min;
-    }
-    if ($sec < 10) {
-        $sec = "0".$sec;
-    }
-
-    if ($fraction) {
-        return "$year-$month-$day"."T"."$hour:$min:$sec.$fraction" . "Z";
-    } else {
-        return "$year-$month-$day"."T"."$hour:$min:$sec" . "Z";
-    }
 }
 
 # NormalizePath - take a path and remove empty and '.' directory components
@@ -478,6 +464,20 @@ sub AdjustPath {
     $path =~ s/^\Q$baseDir\E\///;
 
     return $path;
+}
+
+sub UrlEncodePath {
+    my ($s) = @_;
+
+    $s =~ s/([%?#])/sprintf("%%%02x", ord($1))/eg;
+    if ($s =~ /^([^\/]*:[^\/]*)(\/.*)?$/)  {
+        my ($seg1, $rest) = ($1, $2);
+        $seg1 =~ s/(:)/sprintf("%%%02x", ord($1))/eg;
+        $s = "$seg1";
+        $s .= $rest if defined $rest;
+    }
+
+    return $s;
 }
 
 sub HasBashMetaChars {
