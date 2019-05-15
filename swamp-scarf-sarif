@@ -30,7 +30,7 @@ use ScarfXmlReader;
 use SarifJsonWriter qw(CheckInitialData CheckResultData);
 
 my $progName = "swamp-scarf-sarif";
-my $version = '0.8.8';
+my $version = '1.0.0';
 
 my $bashNonMetaChars = qr/[a-zA-Z0-9.,_=+\/\@:-]/;
 
@@ -173,10 +173,6 @@ sub ReadAssessmentSummary {
                 my ($twig, $e) = @_;
                 $assessment->{"build-artifact-id"} = GetText($e);
             },
-            'assessment-summary/assessment-artifacts/assessment/report' => sub {
-                my ($twig, $e) = @_;
-                $assessment->{report} = GetText($e);
-            },
             'assessment-summary/assessment-artifacts/assessment/exit-code' => sub {
                 my ($twig, $e) = @_;
                 $assessment->{exitCode} = GetText($e);
@@ -305,45 +301,6 @@ sub BugFunction {
     return;
 }
 
-sub Failure {
-    my ($data) = @_;
-    my $failureData = {};
-
-    if ($data->{options}{output} =~ /.+---.+---(.+)---parse/) {
-        $failureData->{tool}{tool_name} = $1;
-    }
-    else {
-        die "Unable to get tool name from dir name";
-    }
-
-    $failureData->{conversion}{tool_name} = $progName;
-    $failureData->{conversion}{tool_version} = $version;
-    $failureData->{conversion}{commandLine} = $0;
-    $failureData->{conversion}{args} = $data->{argv};
-    $failureData->{conversion}{workingDirectory} = getcwd();
-    if ($data->{options}{setenv}) {
-        foreach(keys %ENV) {
-            if ($_ eq "LANG") {
-                $failureData->{conversion}{env}{$_} = $ENV{$_};
-            } elsif ($_ eq "PATH") {
-                $failureData->{conversion}{env}{$_} = "/bin:/usr/bin:."
-            }
-        }
-    } else {
-        foreach (keys %ENV) {
-            $failureData->{conversion}{env}{$_} = $ENV{$_};
-        }
-    }
-    $failureData->{conversion}{startTime} = $data->{startTime};
-
-    $failureData->{message} = $data->{options}{error};
-
-    my $writer = new SarifJsonWriter($data->{options}{output}, "utf-8");
-    $writer->SetPretty($data->{options}{compact});
-
-    $writer->AddFailure($failureData);
-}
-
 sub main {
     my $startTime = time();
 
@@ -367,7 +324,9 @@ sub main {
 
         my %writerOptions = (
             external => \%externalOptions,
-            addArtifactsNoLocation => 1,
+            error_level => 0,
+            addArtifactsNoLocation => 0,
+            addArtifacts => 1,
             addProvenance => 1,
             artifactHashes => 1,
             pretty   => $data{options}{compact},

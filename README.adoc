@@ -21,9 +21,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ////
 
-Module Version: 0.8.8
+Module Version: 1.0.0
 
-Last updated on 05-08-2019
+Last updated on 05-15-2019
 
 Sarif version currently tracking: 2.1.0
 
@@ -53,13 +53,9 @@ This command generates the most complete sarif file possible by providing all th
 ----
 swamp-scarf-sarif --scarf $dirName/parsed_results/parsed_results.xml --summary $dirName/results/assessment_summary.xml --hashes $dirName/hashes.txt --build $dirName/build/ --output output.sarif
 ----
-This command generates the most complete sarif file possible and externalizes all possible properties:
+This command generates the most complete sarif file possible and externalizes all possible properties and reduces conversion env output:
 ----
 swamp-scarf-sarif --scarf $dirName/parsed_results/parsed_results.xml --summary $dirName/results/assessment_summary.xml --hashes $dirName/hashes.txt --build $dirName/build/ --output output.sarif --setenv --external conversion=conversion.sarif --external files=files.sarif --external invocations=invocations.sarif --external properties=properties.sarif --external results=results.sarif
-----
-This command generates a sarif file containing an error message indicating that the assessment failed:
-----
-swamp-scarf-sarif --error "Assessment failed due to incompatible platform" --output output.sarif
 ----
 
 === Requirements
