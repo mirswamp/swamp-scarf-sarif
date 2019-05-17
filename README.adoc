@@ -23,7 +23,7 @@ limitations under the License.
 
 Module Version: 1.0.0
 
-Last updated on 05-15-2019
+Last updated on 05-17-2019
 
 Sarif version currently tracking: 2.1.0
 
@@ -55,7 +55,7 @@ swamp-scarf-sarif --scarf $dirName/parsed_results/parsed_results.xml --summary $
 ----
 This command generates the most complete sarif file possible and externalizes all possible properties and reduces conversion env output:
 ----
-swamp-scarf-sarif --scarf $dirName/parsed_results/parsed_results.xml --summary $dirName/results/assessment_summary.xml --hashes $dirName/hashes.txt --build $dirName/build/ --output output.sarif --setenv --external conversion=conversion.sarif --external files=files.sarif --external invocations=invocations.sarif --external properties=properties.sarif --external results=results.sarif
+swamp-scarf-sarif --scarf $dirName/parsed_results/parsed_results.xml --summary $dirName/results/assessment_summary.xml --hashes $dirName/hashes.txt --build $dirName/build/ --output output.sarif --setenv --external conversion=conversion.sarif --external artifacts=artifacts.sarif --external invocations=invocations.sarif --external properties=properties.sarif --external results=results.sarif
 ----
 
 === Requirements
