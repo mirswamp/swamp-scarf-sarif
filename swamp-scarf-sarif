@@ -325,7 +325,7 @@ sub main {
         my %writerOptions = (
             external => \%externalOptions,
             error_level => 0,
-            addArtifactsNoLocation => 0,
+            preferOnlyArtifactIndex => 1,
             addArtifacts => 1,
             addProvenance => 1,
             artifactHashes => 1,
